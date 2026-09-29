@@ -1,0 +1,25 @@
+# Private working log (never commit)
+PROJECT_LOG.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Build output
+build/
+dist/
+*.spec
+
+# Local data, backups and exports
+backuo/
+*.db
+*.db.tmp
+*.log
+*.pdf
+
+# Editor
+.vscode/
+.idea/
