@@ -297,6 +297,8 @@ STRINGS: dict[str, dict[str, str]] = {
     "pdf.page": {"en": "Page {x}/{y}", "pt": "Página {x}/{y}"},
     "pdf.totals": {"en": "Total", "pt": "Total"},
     "pdf.week_total": {"en": "Week Total", "pt": "Total Semana"},
+    "pdf.cash_total": {"en": "Cash Total", "pt": "Total Dinheiro"},
+    "pdf.card_total": {"en": "Card Total", "pt": "Total Cartão"},
     "pdf.deduction_col": {"en": "Deduction ({pct}%)", "pt": "Dedução ({pct}%)"},
     "pdf.legend_weekly": {
         "en": "✗ = absent that day   — = no data saved for that day",

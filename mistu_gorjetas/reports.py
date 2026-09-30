@@ -119,6 +119,8 @@ def build_weekly(db: Database, any_day: date) -> WeeklyReport:
 class FinalRow:
     staff: Staff
     weeks: list[tuple[int, int]]  # (cash, card) per week
+    total_cash: int
+    total_card: int
     total: int
     deduction: int
     receivable: int
@@ -133,6 +135,8 @@ class FinalReport:
     deduction_pct: Decimal
     rows: list[FinalRow]
     week_totals: list[tuple[int, int]]
+    total_cash: int
+    total_card: int
     total: int
     deduction: int
     receivable: int
@@ -164,9 +168,11 @@ def build_final(db: Database, start: date, end: date, deduction_pct: Decimal) ->
                     cash += sh.cash_share
                     card += sh.card_share
             per_week.append((cash, card))
-        total = sum(c + k for c, k in per_week)
+        total_cash = sum(c for c, _ in per_week)
+        total_card = sum(k for _, k in per_week)
+        total = total_cash + total_card
         ded = deduction_cents(total, deduction_pct)
-        rows.append(FinalRow(s, per_week, total, ded, total - ded))
+        rows.append(FinalRow(s, per_week, total_cash, total_card, total, ded, total - ded))
 
     week_totals = [
         (sum(r.weeks[i][0] for r in rows), sum(r.weeks[i][1] for r in rows))
@@ -180,6 +186,8 @@ def build_final(db: Database, start: date, end: date, deduction_pct: Decimal) ->
         deduction_pct=deduction_pct,
         rows=rows,
         week_totals=week_totals,
+        total_cash=sum(r.total_cash for r in rows),
+        total_card=sum(r.total_card for r in rows),
         total=sum(r.total for r in rows),
         deduction=sum(r.deduction for r in rows),
         receivable=sum(r.receivable for r in rows),

@@ -35,7 +35,8 @@
 - **Weekly export (PDF):** pick a Monday; the Sunday is filled in automatically.
   Shows each person's cash/card per day, ✗ for absent, — for days with no data, and totals.
 - **Final export (PDF):** any range of whole weeks (Monday to Sunday). Shows per-week cash/card,
-  Total, Deduction (x %) and Account Receivable for each person. Long ranges split across pages.
+  Cash Total, Card Total, Total, Deduction (x %) and Account Receivable for each person.
+  Long ranges split evenly across pages (max 5 weeks per page).
 
 **Settings**
 - English / Português, switched instantly. This also sets the language of the PDFs.

@@ -143,10 +143,13 @@ class ReportTests(DbTestCase):
         self.assertEqual(len(r.weeks), 2)
         ana = r.rows[0]
         self.assertEqual(ana.weeks, [(500, 500), (300, 0)])
+        self.assertEqual((ana.total_cash, ana.total_card), (800, 500))
         self.assertEqual(ana.total, 1300)
         self.assertEqual(ana.deduction, 150)  # 149.5 -> 150
         self.assertEqual(ana.receivable, 1150)
         self.assertEqual(r.total, 2300)
+        self.assertEqual((r.total_cash, r.total_card), (1300, 1000))
+        self.assertEqual(r.total_cash + r.total_card, r.total)
         with self.assertRaises(ValueError):
             build_final(self.db, MON + timedelta(days=1), MON + timedelta(days=13), Decimal(0))
 

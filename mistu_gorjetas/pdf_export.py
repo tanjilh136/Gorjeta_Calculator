@@ -23,7 +23,8 @@ PAGE = landscape(A4)
 MARGIN_X = 28
 MARGIN_TOP = 64
 MARGIN_BOTTOM = 40
-CONTENT_W = PAGE[0] - 2 * MARGIN_X
+FRAME_PADDING = 6  # ReportLab's default frame padding on each side
+CONTENT_W = PAGE[0] - 2 * MARGIN_X - 2 * FRAME_PADDING
 
 HEADER_BG = colors.HexColor("#1F4E5A")
 HEADER_SUB_BG = colors.HexColor("#2F6B78")
@@ -34,7 +35,7 @@ ABSENT_COLOR = colors.HexColor("#B03A2E")
 MUTED = colors.HexColor("#8A9599")
 TEXT = colors.HexColor("#1B1F21")
 
-MAX_WEEKS_PER_PAGE = 6
+MAX_WEEKS_PER_PAGE = 5
 
 _fonts: tuple[str, str] | None = None
 ABSENT_MARK = "✗"
@@ -280,10 +281,14 @@ def render_final(report: FinalReport, path: Path) -> None:
     pct = format_percent(report.deduction_pct)
     n_weeks = len(report.weeks)
 
-    chunks = [
-        list(range(i, min(i + MAX_WEEKS_PER_PAGE, n_weeks)))
-        for i in range(0, n_weeks, MAX_WEEKS_PER_PAGE)
-    ] or [[]]
+    # Spread the weeks evenly over as few pages as possible (at most
+    # MAX_WEEKS_PER_PAGE each); the summary columns go on the last page.
+    n_pages = max(1, -(-n_weeks // MAX_WEEKS_PER_PAGE))
+    chunks, start = [], 0
+    for page in range(n_pages):
+        size = n_weeks // n_pages + (1 if page < n_weeks % n_pages else 0)
+        chunks.append(list(range(start, start + size)))
+        start += size
 
     story: list = []
     for ci, weeks in enumerate(chunks):
@@ -304,9 +309,9 @@ def render_final(report: FinalReport, path: Path) -> None:
 
 def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct: str) -> Table:
     regular, bold = _register_fonts()
-    staff_w = 112
-    summary_w = 68 if with_summary else 0
-    n_summary = 3 if with_summary else 0
+    staff_w = 100 if with_summary else 112
+    summary_w = 54 if with_summary else 0
+    n_summary = 5 if with_summary else 0
     col_w = (CONTENT_W - staff_w - n_summary * summary_w) / max(1, 2 * len(weeks))
     col_w = min(col_w, 70)
 
@@ -317,8 +322,9 @@ def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct:
         head0 += [f"{tr('week')} {wi + 1}\n({fmt_day_month(ws)}–{fmt_day_month(we)})", ""]
         head1 += [tr("cash"), tr("card")]
     if with_summary:
-        head0 += [tr("total"), tr("pdf.deduction_col", pct=pct), tr("receivable")]
-        head1 += ["", "", ""]
+        head0 += [tr("pdf.cash_total"), tr("pdf.card_total"), tr("total"),
+                  tr("pdf.deduction_col", pct=pct), tr("receivable")]
+        head1 += [""] * 5
 
     body = []
     for row in report.rows:
@@ -330,7 +336,8 @@ def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct:
             else:
                 line += [NO_DATA_MARK, NO_DATA_MARK]
         if with_summary:
-            line += [format_euro(row.total), format_euro(row.deduction), format_euro(row.receivable)]
+            line += [format_euro(row.total_cash), format_euro(row.total_card), format_euro(row.total),
+                     format_euro(row.deduction), format_euro(row.receivable)]
         body.append(line)
 
     totals = [tr("pdf.totals")]
@@ -341,14 +348,23 @@ def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct:
         else:
             totals += [NO_DATA_MARK, NO_DATA_MARK]
     if with_summary:
-        totals += [format_euro(report.total), format_euro(report.deduction), format_euro(report.receivable)]
+        totals += [format_euro(report.total_cash), format_euro(report.total_card), format_euro(report.total),
+                   format_euro(report.deduction), format_euro(report.receivable)]
 
-    week_values = [v for line in body + [totals] for v in line[1:1 + 2 * len(weeks)]] + head1[1:]
-    summary_values = [v for line in body + [totals] for v in line[1 + 2 * len(weeks):]]
-    size = min(
-        _fit_font(week_values, bold, col_w, 8),
-        _fit_font(summary_values, bold, summary_w, 8) if with_summary else 8,
-    )
+    # Body rows and the (larger) totals row are sized separately, so one big
+    # grand total doesn't shrink the whole table.
+    n_week_cols = 2 * len(weeks)
+
+    def fit(lines: list[list[str]], font: str) -> float:
+        week_vals = [v for line in lines for v in line[1:1 + n_week_cols]]
+        sum_vals = [v for line in lines for v in line[1 + n_week_cols:]]
+        return min(
+            _fit_font(week_vals, font, col_w, 8),
+            _fit_font(sum_vals, font, summary_w, 8) if with_summary else 8,
+        )
+
+    size = min(fit(body, bold), _fit_font(head1[1:], bold, col_w, 8))
+    total_size = min(size, fit([totals], bold))
     hs = _header_style(bold, min(size, 7.5))
     head0 = [head0[0]] + [Paragraph(h.replace("\n", "<br/>"), hs) if h else "" for h in head0[1:]]
     for line in body:
@@ -362,6 +378,7 @@ def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct:
         ("SPAN", (0, 0), (0, 1)),
         ("BACKGROUND", (0, 0), (0, 1), HEADER_BG),
         ("FONT", (0, 2), (0, -2), regular, size + 0.5),
+        ("FONT", (0, -1), (-1, -1), bold, total_size),
         ("LINEAFTER", (0, 0), (0, -1), 0.9, HEADER_BG),
     ]
     for i in range(len(weeks)):
@@ -375,13 +392,15 @@ def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct:
             ]
     if with_summary:
         first = 1 + 2 * len(weeks)
-        for c in range(first, first + 3):
+        total_col, recv_col = first + 2, first + 4
+        for c in range(first, first + 5):
             style.append(("SPAN", (c, 0), (c, 1)))
-        style.append(("BACKGROUND", (first, 0), (first + 2, 1), HEADER_BG))
         style += [
-            ("FONT", (first, 2), (first, -1), bold, size),
-            ("FONT", (first + 2, 2), (first + 2, -1), bold, size),
-            ("BACKGROUND", (first + 2, 2), (first + 2, -2), colors.HexColor("#E8F2EC")),
+            ("BACKGROUND", (first, 0), (first + 4, 1), HEADER_BG),
+            ("LINEBEFORE", (total_col, 0), (total_col, -1), 0.9, HEADER_BG),
+            ("FONT", (total_col, 2), (total_col, -2), bold, size),
+            ("FONT", (recv_col, 2), (recv_col, -2), bold, size),
+            ("BACKGROUND", (recv_col, 2), (recv_col, -2), colors.HexColor("#E8F2EC")),
         ]
     t.setStyle(TableStyle(style))
     return t
