@@ -145,8 +145,14 @@ class ReportTests(DbTestCase):
         self.assertEqual(ana.weeks, [(500, 500), (300, 0)])
         self.assertEqual((ana.total_cash, ana.total_card), (800, 500))
         self.assertEqual(ana.total, 1300)
-        self.assertEqual(ana.deduction, 150)  # 149.5 -> 150
-        self.assertEqual(ana.receivable, 1150)
+        # Deduction on card only: 500 x 11.5% = 57.5 -> 58; cash 800 untouched.
+        self.assertEqual(ana.deduction, 58)
+        self.assertEqual(ana.receivable, 1242)
+        self.assertEqual(ana.receivable, ana.total_cash + (ana.total_card - ana.deduction))
+        bruno = r.rows[1]  # cash 500 + card 500 -> deduction 57.5 -> 58
+        self.assertEqual((bruno.total, bruno.deduction, bruno.receivable), (1000, 58, 942))
+        self.assertEqual(r.deduction, 116)
+        self.assertEqual(r.receivable, r.total - r.deduction)
         self.assertEqual(r.total, 2300)
         self.assertEqual((r.total_cash, r.total_card), (1300, 1000))
         self.assertEqual(r.total_cash + r.total_card, r.total)

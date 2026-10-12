@@ -171,7 +171,9 @@ def build_final(db: Database, start: date, end: date, deduction_pct: Decimal) ->
         total_cash = sum(c for c, _ in per_week)
         total_card = sum(k for _, k in per_week)
         total = total_cash + total_card
-        ded = deduction_cents(total, deduction_pct)
+        # Tax deduction applies to card tips only; cash is paid out in full:
+        # receivable = cash + (card - card x pct).
+        ded = deduction_cents(total_card, deduction_pct)
         rows.append(FinalRow(s, per_week, total_cash, total_card, total, ded, total - ded))
 
     week_totals = [

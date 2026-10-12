@@ -35,7 +35,7 @@
 - **Weekly export (PDF):** pick a Monday; the Sunday is filled in automatically.
   Shows each person's cash/card per day, ✗ for absent, — for days with no data, and totals.
 - **Final export (PDF):** any range of whole weeks (Monday to Sunday). Shows per-week cash/card,
-  Cash Total, Card Total, Total, Deduction (x %) and Account Receivable for each person.
+  Cash Total, Card Total, Total, Deduction on Card (x %) and Account Receivable for each person.
   Long ranges split evenly across pages (max 5 weeks per page).
 
 **Settings**
@@ -72,8 +72,10 @@
   `share = floor(total_cents / present_count)`.
 - Shares are always rounded **down** to the cent. The sum of the shares can be 1–2 cents below
   the entered total, which is intended.
-- Final export: `Deduction = Total × deduction %`, rounded half-up to the cent.
-  `Account Receivable = Total − Deduction`.
+- Final export: the tax deduction applies to **card tips only**. Cash is paid out in full.
+  - `Total = Cash Total + Card Total` (no deduction)
+  - `Deduction = Card Total × deduction %`, rounded half-up to the cent
+  - `Account Receivable = Cash Total + (Card Total − Deduction)`
 
 ## Getting started (development)
 

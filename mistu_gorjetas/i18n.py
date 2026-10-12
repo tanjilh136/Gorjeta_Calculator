@@ -173,8 +173,10 @@ STRINGS: dict[str, dict[str, str]] = {
     "settings.language": {"en": "Language:", "pt": "Idioma:"},
     "settings.deduction": {"en": "Deduction percentage:", "pt": "Percentagem de dedução:"},
     "settings.deduction_hint": {
-        "en": "Used in the Final Export: Deduction = Total × this percentage.",
-        "pt": "Usada na Exportação Final: Dedução = Total × esta percentagem.",
+        "en": "Used in the Final Export, on card tips only: Deduction = Card Total × this percentage. "
+              "Cash is not deducted.",
+        "pt": "Usada na Exportação Final, só sobre as gorjetas em cartão: Dedução = Total Cartão × esta "
+              "percentagem. O dinheiro não tem dedução.",
     },
     "settings.backup": {"en": "Backup", "pt": "Cópia de segurança"},
     "settings.backup_folder": {"en": "Backup folder:", "pt": "Pasta de cópias:"},
@@ -299,7 +301,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "pdf.week_total": {"en": "Week Total", "pt": "Total Semana"},
     "pdf.cash_total": {"en": "Cash Total", "pt": "Total Dinheiro"},
     "pdf.card_total": {"en": "Card Total", "pt": "Total Cartão"},
-    "pdf.deduction_col": {"en": "Deduction ({pct}%)", "pt": "Dedução ({pct}%)"},
+    "pdf.deduction_col": {"en": "Deduction on Card ({pct}%)", "pt": "Dedução s/ Cartão ({pct}%)"},
     "pdf.legend_weekly": {
         "en": "✗ = absent that day   — = no data saved for that day",
         "pt": "✗ = ausente nesse dia   — = sem dados guardados para esse dia",
