@@ -20,9 +20,12 @@
 ## Features
 
 **Daily Sheet**
-- Pick a date (today by default). All active staff are listed, ticked as present.
+- Pick a date (today by default). All active staff are listed and ticked as present, except
+  people on their weekly day off (*folga*) or on holiday (*férias*), who start unticked.
 - Enter the day's **cash** and **card** tip totals. A live preview shows each person's share.
 - Absent staff are greyed out. There is a clear *Saved / Unsaved changes / New day* indicator.
+- **Notes** column: click a cell (✎) to type a note for that person and day. Planned absences
+  are labelled automatically: **Férias** in red, *Folga* in grey.
 - Opening a saved date loads it for editing. **Delete day** removes one saved day.
 
 **Staff**
@@ -30,13 +33,22 @@
 - Sections: Sala / Cozinha / Copa / Other.
 - Drag to reorder. The order is used on the daily sheet and in every export.
 
+**Days Off & Holidays (Folgas e Férias)**
+- **Folgas:** tick each person's weekly days off (several per person allowed).
+- **Férias:** schedule holiday periods per person (start/end). Overlapping periods for the
+  same person are refused.
+- These only set the starting ticks on new days. Saved days are never changed.
+
 **Records & Export**
 - List of saved days with present count and totals. Double-click a day to edit it.
 - **Weekly export (PDF):** pick a Monday; the Sunday is filled in automatically.
-  Shows each person's cash/card per day, ✗ for absent, — for days with no data, and totals.
+  Shows each person's cash/card per day, ✗ for absent, **FO** for folga, **FÉ** for férias,
+  — for days with no data, and totals.
 - **Final export (PDF):** any range of whole weeks (Monday to Sunday). Shows per-week cash/card,
   Cash Total, Card Total, Total, Deduction on Card (x %) and Account Receivable for each person.
   Long ranges split evenly across pages (max 5 weeks per page).
+- Both exports end with a **Notes** column: holidays overlapping the period
+  (*Férias: start – end*, in red) and the notes typed on the Daily Sheet, with their dates.
 
 **Settings**
 - English / Português, switched instantly. This also sets the language of the PDFs.
@@ -53,13 +65,17 @@
 
 ## Screenshots
 
-| Records & Export | Staff |
+| Days Off & Holidays | Records & Export |
 |---|---|
-| ![Records & Export](docs/screenshots/records-export.png) | ![Staff](docs/screenshots/staff.png) |
+| ![Days Off & Holidays](docs/screenshots/days-off-holidays.png) | ![Records & Export](docs/screenshots/records-export.png) |
 
-| Settings | Loading screen |
+| Staff | Settings |
 |---|---|
-| ![Settings](docs/screenshots/settings.png) | ![Loading screen](docs/screenshots/loading-screen.png) |
+| ![Staff](docs/screenshots/staff.png) | ![Settings](docs/screenshots/settings.png) |
+
+| Loading screen | |
+|---|---|
+| ![Loading screen](docs/screenshots/loading-screen.png) | |
 
 | Weekly export (PDF) | Final export (PDF) |
 |---|---|
@@ -101,8 +117,8 @@ export MISTU_DATA_DIR=/tmp/mistu-dev
 set MISTU_DATA_DIR=%TEMP%\mistu-dev
 ```
 
-**Test data:** 25 staff and the last 5 full weeks, including absences, a closed day,
-an archived staff member and a late joiner. This wipes the target database.
+**Test data:** 25 staff and the last 5 full weeks, including folgas, férias, typed notes,
+absences, a closed day, an archived staff member and a late joiner. This wipes the target database.
 
 ```bash
 python seed_test_data.py --yes
@@ -194,6 +210,7 @@ tools/make_icon.py        Generates assets/app.ico and assets/logo.png
 tests/                    Unit tests
 mistu_gorjetas/
   money.py                Cent parsing/formatting, split, deduction
+  schedule.py             Folgas / férias: who is planned absent on a date
   db.py                   SQLite schema and queries
   reports.py              Weekly / final export data
   pdf_export.py           PDF layout (landscape A4)

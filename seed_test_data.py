@@ -8,7 +8,10 @@ Usage:
 The last 5 complete weeks (Monday-Sunday, ending last Sunday) are filled.
 Special cases included for checking the exports:
   * one closed day with no data saved at all (shows "—")
-  * random absences on every day (shows "✗")
+  * weekly days off (folgas) for everyone, some with two (shows "FO")
+  * holidays (ferias): one inside week 3, one running past the last week,
+    one planned for next month (shows "FÉ" and dates in the Notes column)
+  * a few random extra absences (shows "✗") and typed notes
   * one staff member archived after week 2 (still in exports for weeks 1-2)
   * one staff member added in week 4 (not in earlier weeks)
 """
@@ -22,6 +25,7 @@ from datetime import date, datetime, timedelta
 
 from mistu_gorjetas import paths
 from mistu_gorjetas.db import Database, monday_of
+from mistu_gorjetas.schedule import Schedule
 
 NAMES = [
     ("Ana Silva", "sala"), ("João Ferreira", "sala"), ("Maria Santos", "sala"),
@@ -34,6 +38,8 @@ NAMES = [
     ("Ricardo Nunes", "other"), ("Luísa Soares", "other"), ("Gonçalo Vieira", "sala"),
     ("Mariana Monteiro-Albuquerque", "sala"),
 ]
+
+NOTES = ["Saiu mais cedo", "Chegou atrasado", "Troca de turno com colega", "Fez horas extra"]
 
 
 def main() -> int:
@@ -59,6 +65,8 @@ def main() -> int:
     all_days = [first_monday + timedelta(days=i) for i in range(7 * args.weeks)]
 
     with db.conn:
+        db.conn.execute("DELETE FROM ferias")
+        db.conn.execute("DELETE FROM folgas")
         db.conn.execute("DELETE FROM attendance")
         db.conn.execute("DELETE FROM days")
         db.conn.execute("DELETE FROM staff")
@@ -74,6 +82,17 @@ def main() -> int:
         late_joiner_date, datetime.min.time()).isoformat(timespec="seconds"))
     ids.append(late_id)
 
+    # Folgas: one weekday each, every third person a second one.
+    for i, sid in enumerate(ids):
+        db.set_folga(sid, i % 7, True)
+        if i % 3 == 0:
+            db.set_folga(sid, (i + 3) % 7, True)
+    # Ferias
+    db.add_ferias(ids[1], first_monday + timedelta(days=14), first_monday + timedelta(days=20))
+    db.add_ferias(ids[10], last_sunday - timedelta(days=4), last_sunday + timedelta(days=10))
+    db.add_ferias(ids[2], last_sunday + timedelta(days=22), last_sunday + timedelta(days=35))
+    sched = Schedule(db, first_monday, last_sunday)
+
     closed_day = first_monday + timedelta(days=7)  # Monday of week 2: restaurant closed
     for d in all_days:
         if d == closed_day:
@@ -83,16 +102,17 @@ def main() -> int:
             sid for sid in ids
             if not (sid == archived_id and week_no >= 2) and not (sid == late_id and d < late_joiner_date)
         ]
-        attendance = {sid: rng.random() > 0.18 for sid in roster}
+        attendance = {sid: sched.reason(sid, d) is None and rng.random() > 0.08 for sid in roster}
         if not any(attendance.values()):
             attendance[roster[0]] = True
+        notes = {sid: rng.choice(NOTES) for sid in roster if rng.random() < 0.02}
         weekend = d.weekday() >= 4
         cash = rng.randint(80_00, 260_00) + (rng.randint(50_00, 150_00) if weekend else 0) + rng.randint(0, 99)
         card = rng.randint(120_00, 420_00) + (rng.randint(80_00, 250_00) if weekend else 0) + rng.randint(0, 99)
-        db.save_day(d, cash, card, attendance)
+        db.save_day(d, cash, card, attendance, notes)
 
     db.set_staff_active(archived_id, False)
-    db.set_setting("deduction_pct", "11.5")
+    db.set_setting("deduction_pct", "10")
     db.close()
     print(f"Seeded {len(ids)} staff and {len(all_days) - 1} days "
           f"({first_monday:%d/%m/%Y} to {last_sunday:%d/%m/%Y}) into {db_file}")

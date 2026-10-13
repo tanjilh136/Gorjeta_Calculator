@@ -5,7 +5,10 @@ Run with:  python -m unittest discover -s tests
 
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
+import sqlite3
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -14,6 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 _TMP = tempfile.mkdtemp(prefix="mistu_test_")
+atexit.register(shutil.rmtree, _TMP, ignore_errors=True)
 os.environ["MISTU_DATA_DIR"] = _TMP
 os.environ["MISTU_PROGRAMDATA_DIR"] = os.path.join(_TMP, "programdata")
 
@@ -28,7 +32,16 @@ from mistu_gorjetas.money import (  # noqa: E402
     parse_percent,
     split_equally,
 )
-from mistu_gorjetas.reports import ABSENT, NO_DATA, VALUE, build_final, build_weekly  # noqa: E402
+from mistu_gorjetas.reports import (  # noqa: E402
+    ABSENT,
+    NO_DATA,
+    NOTE_DAY,
+    NOTE_FERIAS,
+    VALUE,
+    build_final,
+    build_weekly,
+)
+from mistu_gorjetas.schedule import FERIAS, FOLGA, reasons_for_day  # noqa: E402
 
 MON = date(2026, 8, 31)  # a Monday
 
@@ -158,6 +171,110 @@ class ReportTests(DbTestCase):
         self.assertEqual(r.total_cash + r.total_card, r.total)
         with self.assertRaises(ValueError):
             build_final(self.db, MON + timedelta(days=1), MON + timedelta(days=13), Decimal(0))
+
+
+class LeaveTests(DbTestCase):
+    """Folgas (weekly days off), ferias (holidays) and notes."""
+
+    def test_folgas(self):
+        self.db.set_folga(self.a, 0, True)
+        self.db.set_folga(self.a, 3, True)
+        self.db.set_folga(self.a, 3, True)  # idempotent
+        self.db.set_folga(self.b, 6, True)
+        self.assertEqual(self.db.get_folgas(), {self.a: {0, 3}, self.b: {6}})
+        self.db.set_folga(self.a, 0, False)
+        self.assertEqual(self.db.get_folgas()[self.a], {3})
+
+    def test_ferias_and_conflicts(self):
+        fid = self.db.add_ferias(self.a, MON, MON + timedelta(days=9))
+        self.assertIsNotNone(self.db.ferias_conflict(self.a, MON + timedelta(days=9), MON + timedelta(days=12)))
+        self.assertIsNone(self.db.ferias_conflict(self.a, MON + timedelta(days=10), MON + timedelta(days=12)))
+        self.assertIsNone(self.db.ferias_conflict(self.b, MON, MON))  # other person
+        self.assertIsNone(self.db.ferias_conflict(self.a, MON, MON, exclude_id=fid))  # editing itself
+        with self.assertRaises(ValueError):
+            self.db.add_ferias(self.a, MON, MON - timedelta(days=1))
+        self.db.delete_staff(self.c)  # no history: allowed, cascades
+        self.db.add_ferias(self.b, MON, MON)
+        self.db.delete_ferias(fid)
+        self.assertEqual([f.staff_id for f in self.db.list_ferias()], [self.b])
+
+    def test_reasons_ferias_win_over_folga(self):
+        self.db.set_folga(self.a, MON.weekday(), True)
+        self.db.set_folga(self.b, MON.weekday(), True)
+        self.db.add_ferias(self.a, MON, MON + timedelta(days=2))
+        reasons = reasons_for_day(self.db, MON, [self.a, self.b, self.c])
+        self.assertEqual(reasons, {self.a: FERIAS, self.b: FOLGA})
+        self.assertEqual(reasons_for_day(self.db, MON + timedelta(days=1), [self.a, self.b]), {self.a: FERIAS})
+
+    def test_notes_saved_with_day(self):
+        self.db.save_day(MON, 1000, 0, {self.a: True, self.b: False}, {self.a: "  Saiu cedo ", self.b: ""})
+        day = self.db.get_day(MON)
+        self.assertEqual(day.notes, {self.a: "Saiu cedo"})
+        self.db.save_day(MON, 1000, 0, {self.a: True, self.b: False})  # overwrite without notes
+        self.assertEqual(self.db.get_day(MON).notes, {})
+
+    def test_weekly_codes_and_notes(self):
+        self.db.set_folga(self.b, MON.weekday(), True)
+        self.db.add_ferias(self.c, MON - timedelta(days=3), MON + timedelta(days=1))
+        self.db.save_day(MON, 900, 0, {self.a: True, self.b: False, self.c: False}, {self.a: "Extra"})
+        self.db.save_day(MON + timedelta(days=2), 900, 0, {self.a: True, self.b: False, self.c: True})
+        r = build_weekly(self.db, MON)
+        ana, bruno, carla = r.rows
+        self.assertEqual((bruno.cells[0].state, bruno.cells[0].reason), (ABSENT, FOLGA))
+        self.assertEqual((carla.cells[0].state, carla.cells[0].reason), (ABSENT, FERIAS))
+        self.assertEqual((bruno.cells[2].state, bruno.cells[2].reason), (ABSENT, None))  # plain absence
+        self.assertEqual(carla.cells[2].state, VALUE)
+        self.assertEqual([(n.kind, n.start, n.end) for n in carla.notes],
+                         [(NOTE_FERIAS, MON - timedelta(days=3), MON + timedelta(days=1))])
+        self.assertEqual([(n.kind, n.start, n.text) for n in ana.notes], [(NOTE_DAY, MON, "Extra")])
+
+    def test_final_notes(self):
+        self.db.add_ferias(self.a, MON + timedelta(days=12), MON + timedelta(days=30))
+        self.db.add_ferias(self.a, MON + timedelta(days=60), MON + timedelta(days=70))  # outside
+        self.db.save_day(MON + timedelta(days=1), 500, 500, {self.a: True, self.b: True}, {self.b: "Turno"})
+        r = build_final(self.db, MON, MON + timedelta(days=13), Decimal("10"))
+        ana, bruno = r.rows[0], r.rows[1]
+        self.assertEqual([(n.kind, n.end) for n in ana.notes], [(NOTE_FERIAS, MON + timedelta(days=30))])
+        self.assertEqual([(n.kind, n.text) for n in bruno.notes], [(NOTE_DAY, "Turno")])
+
+    def test_retention_purges_old_ferias(self):
+        self.db.add_ferias(self.a, date(2020, 1, 1), date(2020, 1, 10))
+        self.db.add_ferias(self.a, date(2026, 1, 1), date(2026, 1, 10))
+        self.db.purge_older_than(retention_cutoff(date(2026, 9, 29)))
+        self.assertEqual([f.start.year for f in self.db.list_ferias()], [2026])
+
+
+class MigrationTests(unittest.TestCase):
+    def test_version1_database_is_upgraded(self):
+        path = Path(tempfile.mkdtemp(dir=_TMP)) / "old.db"
+        conn = sqlite3.connect(path)
+        conn.executescript("""
+            CREATE TABLE staff (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                section TEXT NOT NULL DEFAULT 'sala', is_active INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+            CREATE TABLE days (date TEXT PRIMARY KEY, cash_total_cents INTEGER NOT NULL DEFAULT 0,
+                card_total_cents INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
+            CREATE TABLE attendance (date TEXT NOT NULL REFERENCES days(date) ON DELETE CASCADE,
+                staff_id INTEGER NOT NULL REFERENCES staff(id), present INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (date, staff_id));
+            CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO staff VALUES (1, 'Ana', 'sala', 1, 1, '2026-01-01T00:00:00');
+            INSERT INTO days VALUES ('2026-08-31', 1000, 0, '2026-08-31T20:00:00');
+            INSERT INTO attendance VALUES ('2026-08-31', 1, 1);
+            PRAGMA user_version = 1;
+        """)
+        conn.commit()
+        conn.close()
+        db = Database(path)
+        try:
+            day = db.get_day(MON)
+            self.assertEqual((day.cash_total_cents, day.present_ids, day.notes), (1000, {1}, {}))
+            db.save_day(MON, 1000, 0, {1: True}, {1: "ok"})
+            self.assertEqual(db.get_day(MON).notes, {1: "ok"})
+            self.assertEqual(db.conn.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(db.get_folgas(), {})
+        finally:
+            db.close()
 
 
 class BackupTests(DbTestCase):

@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QObject, QRect, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QLineEdit,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -24,6 +28,7 @@ from PySide6.QtWidgets import (
 from ..db import Database, Day, Staff, retention_cutoff
 from ..i18n import fmt_date, fmt_datetime, section_name, tr, weekday_long
 from ..money import MoneyError, format_euro, split_equally
+from ..schedule import FERIAS, FOLGA, reasons_for_day
 from .widgets import (
     MoneyEdit,
     ask,
@@ -36,9 +41,71 @@ from .widgets import (
     to_qdate,
 )
 
-COL_NAME, COL_SECTION, COL_CASH, COL_CARD, COL_TOTAL = range(5)
+COL_NAME, COL_SECTION, COL_CASH, COL_CARD, COL_TOTAL, COL_NOTES = range(6)
+N_COLS = 6
 GREY = QBrush(QColor("#a3acb0"))
 NORMAL = QBrush(QColor("#1b1f21"))
+NOTE_ROLE = Qt.UserRole        # the typed note (str)
+TAG_ROLE = Qt.UserRole + 1     # FERIAS / FOLGA / None: planned absence label
+TAG_COLORS = {FERIAS: QColor("#c0392b"), FOLGA: QColor("#6b777c")}
+NOTE_MAX = 200
+
+
+class NotesDelegate(QStyledItemDelegate):
+    """Notes cell: planned-absence label (Férias in red, Folga in grey), the typed
+    note, and a pencil icon at the right. Clicking the cell edits the note."""
+
+    PENCIL = "✎"
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        style = opt.widget.style() if opt.widget else None
+        if style is not None:
+            style.drawControl(QStyle.CE_ItemViewItem, opt, painter, opt.widget)
+
+        rect = option.rect.adjusted(8, 0, -8, 0)
+        painter.save()
+        fm = painter.fontMetrics()
+        pencil_w = fm.horizontalAdvance(self.PENCIL) + 6
+        painter.setPen(QColor("#9aa4a8"))
+        painter.drawText(QRect(rect.right() - pencil_w, rect.top(), pencil_w, rect.height()),
+                         Qt.AlignRight | Qt.AlignVCenter, self.PENCIL)
+        text_rect = rect.adjusted(0, 0, -pencil_w - 4, 0)
+
+        tag = index.data(TAG_ROLE)
+        if tag:
+            label = tr(f"tag.{tag}")
+            bold = QFont(painter.font())
+            bold.setBold(True)
+            painter.setFont(bold)
+            painter.setPen(TAG_COLORS[tag])
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, label)
+            used = painter.fontMetrics().horizontalAdvance(label) + 10
+            text_rect = text_rect.adjusted(used, 0, 0, 0)
+            painter.setFont(option.font)
+        note = index.data(NOTE_ROLE) or ""
+        if note and text_rect.width() > 10:
+            painter.setPen(QColor("#1b1f21"))
+            elided = painter.fontMetrics().elidedText(note, Qt.ElideRight, text_rect.width())
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, elided)
+        painter.restore()
+
+    def createEditor(self, parent, option, index):
+        editor = QLineEdit(parent)
+        editor.setMaxLength(NOTE_MAX)
+        editor.setPlaceholderText(tr("daily.note_placeholder"))
+        editor.setFrame(False)
+        return editor
+
+    def setEditorData(self, editor, index):
+        editor.setText(index.data(NOTE_ROLE) or "")
+
+    def setModelData(self, editor, model, index):
+        text = " ".join(editor.text().split())
+        model.setData(index, text, NOTE_ROLE)
+        model.setData(index, text or tr("daily.note_tip"), Qt.ToolTipRole)
 
 
 class _SpaceToggle(QObject):
@@ -66,6 +133,7 @@ class DailySheetPage(QWidget):
         self._date: date = date.today()
         self._roster: list[Staff] = []
         self._day: Day | None = None
+        self._tags: dict[int, str] = {}  # staff_id -> FERIAS / FOLGA for the shown date
         self._baseline: tuple | None = None
         self._loading = False
 
@@ -125,7 +193,7 @@ class DailySheetPage(QWidget):
         amounts_row.addLayout(summary, 1)
 
         # --- staff table
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, N_COLS)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -137,8 +205,11 @@ class DailySheetPage(QWidget):
         hh.setSectionResizeMode(COL_NAME, QHeaderView.Stretch)
         for c in (COL_SECTION, COL_CASH, COL_CARD, COL_TOTAL):
             hh.setSectionResizeMode(c, QHeaderView.Fixed)
-            self.table.setColumnWidth(c, 120)
-        self.table.cellClicked.connect(lambda r, _c: self._toggle_row(r))
+            self.table.setColumnWidth(c, 110)
+        hh.setSectionResizeMode(COL_NOTES, QHeaderView.Stretch)
+        self.table.setItemDelegateForColumn(COL_NOTES, NotesDelegate(self.table))
+        self.table.cellClicked.connect(self._cell_clicked)
+        self.table.itemChanged.connect(self._item_changed)
         self.table.installEventFilter(_SpaceToggle(self))
 
         self.empty_label = QLabel()
@@ -222,24 +293,42 @@ class DailySheetPage(QWidget):
     def reload_staff(self) -> None:
         """Staff list changed (added, archived, reordered): rebuild rows, keep edits."""
         current = self._present_ids()
+        notes = self._notes()
         old_ids = {s.id for s in self._roster}
         is_new_day = self._day is None
         roster = self._build_roster(self._day)
+        self._tags = reasons_for_day(self.db, self._date, [s.id for s in roster])
         present = set()
         for s in roster:
             if s.id in old_ids:
                 if s.id in current:
                     present.add(s.id)
-            elif is_new_day:
+            elif is_new_day and s.id not in self._tags:
                 present.add(s.id)
         self._roster = roster
+        ids = {s.id for s in roster}
         if is_new_day and self._baseline is not None:
-            self._baseline = (0, 0, frozenset(s.id for s in roster))
+            self._baseline = (0, 0, frozenset(i for i in ids if i not in self._tags), frozenset())
         elif self._baseline is not None:
             self._baseline = (self._baseline[0], self._baseline[1],
-                              frozenset(i for i in self._baseline[2] if i in {s.id for s in roster}))
-        self._fill_table(present)
+                              frozenset(i for i in self._baseline[2] if i in ids),
+                              frozenset(n for n in self._baseline[3] if n[0] in ids))
+        self._fill_table(present, {k: v for k, v in notes.items() if k in ids})
         self._refresh()
+
+    def schedule_changed(self) -> None:
+        """Folgas/ferias were edited: a new, untouched day picks up the new defaults;
+        otherwise only the labels in the Notes column are refreshed."""
+        if self._day is None and not self.is_dirty():
+            self._load(self._date)
+            return
+        self._tags = reasons_for_day(self.db, self._date, [s.id for s in self._roster])
+        self._loading = True
+        for r, s in enumerate(self._roster):
+            item = self.table.item(r, COL_NOTES)
+            if item is not None:
+                item.setData(TAG_ROLE, self._tags.get(s.id))
+        self._loading = False
 
     def reload(self) -> None:
         """Data changed underneath (restore, delete): reload the current day."""
@@ -260,10 +349,10 @@ class DailySheetPage(QWidget):
         self.save_btn.setText(tr("save") + "  (Ctrl+S)")
         self.empty_label.setText(tr("daily.no_staff"))
         self.table.setHorizontalHeaderLabels(
-            [tr("daily.present"), tr("section"), tr("cash"), tr("card"), tr("total")]
+            [tr("daily.present"), tr("section"), tr("cash"), tr("card"), tr("total"), tr("daily.notes")]
         )
         if self._roster:
-            self._fill_table(self._present_ids())
+            self._fill_table(self._present_ids(), self._notes())
         self._refresh()
 
     # ----------------------------------------------------------- loading
@@ -292,26 +381,34 @@ class DailySheetPage(QWidget):
         self._sync_date_edit()
         self._day = self.db.get_day(d)
         self._roster = self._build_roster(self._day)
+        self._tags = reasons_for_day(self.db, d, [s.id for s in self._roster])
         if self._day is None:
-            present = {s.id for s in self._roster}
+            # New day: everyone ticked except planned absences (folga / ferias).
+            present = {s.id for s in self._roster if s.id not in self._tags}
+            notes: dict[int, str] = {}
             self.cash_edit.set_cents(None)
             self.card_edit.set_cents(None)
-            self._baseline = (0, 0, frozenset(present))
+            self._baseline = (0, 0, frozenset(present), frozenset())
         else:
+            ids = {s.id for s in self._roster}
             present = self._day.present_ids
+            notes = {k: v for k, v in self._day.notes.items() if k in ids}
             self.cash_edit.set_cents(self._day.cash_total_cents)
             self.card_edit.set_cents(self._day.card_total_cents)
             self._baseline = (
                 self._day.cash_total_cents,
                 self._day.card_total_cents,
-                frozenset(present & {s.id for s in self._roster}),
+                frozenset(present & ids),
+                frozenset(notes.items()),
             )
-        self._fill_table(present)
+        self._fill_table(present, notes)
         self._loading = False
         self._refresh()
         self.next_btn.setEnabled(d < date.today())
 
-    def _fill_table(self, present: set[int]) -> None:
+    def _fill_table(self, present: set[int], notes: dict[int, str]) -> None:
+        was_loading = self._loading
+        self._loading = True
         self.table.setRowCount(len(self._roster))
         for r, s in enumerate(self._roster):
             name = s.name if s.is_active else f"{s.name}  {tr('daily.archived_tag')}"
@@ -325,6 +422,13 @@ class DailySheetPage(QWidget):
                 item = QTableWidgetItem()
                 item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table.setItem(r, c, item)
+            note_item = QTableWidgetItem()
+            note_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
+            note_item.setData(NOTE_ROLE, notes.get(s.id, ""))
+            note_item.setData(TAG_ROLE, self._tags.get(s.id))
+            note_item.setToolTip(notes.get(s.id) or tr("daily.note_tip"))
+            self.table.setItem(r, COL_NOTES, note_item)
+        self._loading = was_loading
         has_rows = bool(self._roster)
         self.table.setVisible(has_rows)
         self.empty_label.setVisible(not has_rows)
@@ -346,9 +450,28 @@ class DailySheetPage(QWidget):
                 return None
         return get(self.cash_edit), get(self.card_edit)
 
+    def _notes(self) -> dict[int, str]:
+        """staff_id -> typed note (non-empty only)."""
+        notes = {}
+        for r in range(self.table.rowCount()):
+            name, item = self.table.item(r, COL_NAME), self.table.item(r, COL_NOTES)
+            if name is not None and item is not None and item.data(NOTE_ROLE):
+                notes[name.data(Qt.UserRole)] = item.data(NOTE_ROLE)
+        return notes
+
     def _state(self) -> tuple:
         cash, card = self._amounts()
-        return (cash, card, frozenset(self._present_ids()))
+        return (cash, card, frozenset(self._present_ids()), frozenset(self._notes().items()))
+
+    def _cell_clicked(self, row: int, col: int) -> None:
+        if col == COL_NOTES:
+            self.table.editItem(self.table.item(row, COL_NOTES))
+        else:
+            self._toggle_row(row)
+
+    def _item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() == COL_NOTES and not self._loading:
+            self._update_status()
 
     def _toggle_row(self, row: int) -> None:
         item = self.table.item(row, COL_NAME)
@@ -381,7 +504,7 @@ class DailySheetPage(QWidget):
                           format_euro(cash_share + card_share))
             for c, v in zip((COL_CASH, COL_CARD, COL_TOTAL), values):
                 self.table.item(r, c).setText(v)
-            for c in range(5):
+            for c in range(COL_NOTES):
                 self.table.item(r, c).setForeground(brush)
 
         self.count_label.setText(tr("daily.present_count", n=n, total=len(self._roster)))
@@ -438,13 +561,13 @@ class DailySheetPage(QWidget):
             return False
 
         attendance = {s.id: s.id in present for s in self._roster}
-        self.db.save_day(self._date, cash, card, attendance)
+        self.db.save_day(self._date, cash, card, attendance, self._notes())
         self._load(self._date)
         self.dayChanged.emit(self._date)
         return True
 
     def delete_day(self) -> None:
-        """Remove everything saved for the current day (totals and attendance)."""
+        """Remove everything saved for the current day (totals, attendance, notes)."""
         if self._day is None:
             return
         if not ask(self, tr("daily.delete_confirm", date=fmt_date(self._date),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
@@ -17,7 +18,8 @@ from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, 
 from . import APP_NAME, CREDIT, paths
 from .i18n import fmt_date, fmt_datetime, fmt_day_month, tr, weekday_short
 from .money import format_euro, format_percent
-from .reports import ABSENT, NO_DATA, FinalReport, WeeklyReport
+from .reports import ABSENT, NO_DATA, NOTE_FERIAS, FinalReport, Note, WeeklyReport
+from .schedule import FERIAS, FOLGA
 
 PAGE = landscape(A4)
 MARGIN_X = 28
@@ -31,11 +33,14 @@ HEADER_SUB_BG = colors.HexColor("#2F6B78")
 ZEBRA = colors.HexColor("#F2F6F7")
 TOTAL_BG = colors.HexColor("#DDE7EA")
 GRID = colors.HexColor("#B8C7CC")
-ABSENT_COLOR = colors.HexColor("#B03A2E")
+ABSENT_HEX = "#B03A2E"
+ABSENT_COLOR = colors.HexColor(ABSENT_HEX)
+FOLGA_COLOR = colors.HexColor("#2F6B78")
 MUTED = colors.HexColor("#8A9599")
 TEXT = colors.HexColor("#1B1F21")
 
 MAX_WEEKS_PER_PAGE = 5
+NOTES_W = 118  # Notes column width (both exports)
 
 _fonts: tuple[str, str] | None = None
 ABSENT_MARK = "✗"
@@ -150,6 +155,22 @@ def _header_style(font: str, size: float) -> ParagraphStyle:
     )
 
 
+def _notes_cell(notes: list[Note], size: float) -> Paragraph | str:
+    """Holidays overlapping the period in red, then the typed day notes ('dd/mm: text')."""
+    regular, bold = _register_fonts()
+    parts = []
+    for n in notes:
+        if n.kind == NOTE_FERIAS:
+            text = tr("pdf.note.ferias", start=fmt_date(n.start), end=fmt_date(n.end))
+            parts.append(f'<font name="{bold}" color="{ABSENT_HEX}">{escape(text)}</font>')
+        else:
+            parts.append(f'<font name="{bold}">{fmt_day_month(n.start)}:</font> {escape(n.text)}')
+    if not parts:
+        return ""
+    style = ParagraphStyle("note", fontName=regular, fontSize=size, leading=size * 1.25, textColor=TEXT)
+    return Paragraph("<br/>".join(parts), style)
+
+
 def _legend(text: str) -> Paragraph:
     regular, _ = _register_fonts()
     style = ParagraphStyle("legend", fontName=regular, fontSize=7, leading=9, textColor=MUTED)
@@ -201,8 +222,9 @@ def render_weekly(report: WeeklyReport, path: Path) -> None:
     for d in report.days:
         head0 += [f"{weekday_short(d)} {fmt_day_month(d)}", ""]
         head1 += [tr("cash"), tr("card")]
-    head0 += [tr("pdf.week_total"), ""]
-    head1 += [tr("cash"), tr("card")]
+    head0 += [tr("pdf.week_total"), "", tr("pdf.notes")]
+    head1 += [tr("cash"), tr("card"), ""]
+    codes = {FOLGA: tr("pdf.code.folga"), FERIAS: tr("pdf.code.ferias")}
 
     body = []
     marks = []  # (col, row, kind)
@@ -213,11 +235,12 @@ def render_weekly(report: WeeklyReport, path: Path) -> None:
                 line += [NO_DATA_MARK, NO_DATA_MARK]
                 marks.append((1 + 2 * i, r, NO_DATA))
             elif cell.state == ABSENT:
-                line += [ABSENT_MARK, ABSENT_MARK]
-                marks.append((1 + 2 * i, r, ABSENT))
+                mark = codes.get(cell.reason, ABSENT_MARK)
+                line += [mark, mark]
+                marks.append((1 + 2 * i, r, cell.reason or ABSENT))
             else:
                 line += [format_euro(cell.cash), format_euro(cell.card)]
-        line += [format_euro(row.total_cash), format_euro(row.total_card)]
+        line += [format_euro(row.total_cash), format_euro(row.total_card), ""]
         body.append(line)
 
     totals = [tr("pdf.totals")]
@@ -226,37 +249,45 @@ def render_weekly(report: WeeklyReport, path: Path) -> None:
             totals += [format_euro(c), format_euro(k)]
         else:
             totals += [NO_DATA_MARK, NO_DATA_MARK]
-    totals += [format_euro(report.total_cash), format_euro(report.total_card)]
+    totals += [format_euro(report.total_cash), format_euro(report.total_card), ""]
 
-    staff_w = 112
-    col_w = (CONTENT_W - staff_w) / 16
-    values = [v for line in body + [totals] for v in line[1:]] + head1[1:]
-    size = _fit_font(values, bold, col_w, 7.5)
-    head_size = _fit_font([h for h in head0[1:] if h], bold, col_w * 2, 7.5)
-    names = [_truncate(line[0], regular, size + 0.5, staff_w) for line in body]
-    for line, name in zip(body, names):
-        line[0] = name
+    staff_w = 100
+    col_w = (CONTENT_W - staff_w - NOTES_W) / 16
+    # Body and the (larger) totals row are sized separately.
+    size = _fit_font([v for line in body for v in line[1:17]] + head1[1:17], bold, col_w, 7.5)
+    total_size = min(size, _fit_font(totals[1:17], bold, col_w, 7.5))
+    head_size = _fit_font([h for h in head0[1:17] if h], bold, col_w * 2, 7.5)
+    for line, row in zip(body, report.rows):
+        line[0] = _truncate(line[0], regular, size + 0.5, staff_w)
+        line[17] = _notes_cell(row.notes, max(5.5, size - 0.5))
 
     data = [head0, head1] + body + [totals]
-    t = Table(data, colWidths=[staff_w] + [col_w] * 16, repeatRows=2, hAlign="LEFT")
+    t = Table(data, colWidths=[staff_w] + [col_w] * 16 + [NOTES_W], repeatRows=2, hAlign="LEFT")
     style = _base_style(2, len(data), size)
     style += [
         ("SPAN", (0, 0), (0, 1)),
         ("BACKGROUND", (0, 0), (0, 1), HEADER_BG),
         ("FONT", (0, 0), (-1, 0), bold, head_size),
         ("FONT", (0, 2), (0, -2), regular, size + 0.5),
+        ("FONT", (0, -1), (-1, -1), bold, total_size),
+        ("SPAN", (17, 0), (17, 1)),
+        ("BACKGROUND", (17, 0), (17, 1), HEADER_BG),
+        ("ALIGN", (17, 2), (17, -1), "LEFT"),
+        ("VALIGN", (17, 2), (17, -1), "TOP"),
     ]
     for i in range(8):
         style.append(("SPAN", (1 + 2 * i, 0), (2 + 2 * i, 0)))
         style.append(("LINEAFTER", (2 + 2 * i, 0), (2 + 2 * i, -1), 0.9, HEADER_BG))
     style.append(("LINEAFTER", (0, 0), (0, -1), 0.9, HEADER_BG))
+    mark_colors = {ABSENT: ABSENT_COLOR, FERIAS: ABSENT_COLOR, FOLGA: FOLGA_COLOR, NO_DATA: MUTED}
     for col, r, kind in marks:
         row_idx = r + 2
-        color = ABSENT_COLOR if kind == ABSENT else MUTED
         style += [
             ("ALIGN", (col, row_idx), (col + 1, row_idx), "CENTER"),
-            ("TEXTCOLOR", (col, row_idx), (col + 1, row_idx), color),
+            ("TEXTCOLOR", (col, row_idx), (col + 1, row_idx), mark_colors[kind]),
         ]
+        if kind in (FOLGA, FERIAS):
+            style.append(("FONT", (col, row_idx), (col + 1, row_idx), bold, size))
     for i, has in enumerate(report.has_data):
         if not has:
             style += [
@@ -265,7 +296,8 @@ def render_weekly(report: WeeklyReport, path: Path) -> None:
             ]
     t.setStyle(TableStyle(style))
 
-    story = [t, Spacer(1, 6), _legend(tr("pdf.legend_weekly").replace("✗", ABSENT_MARK))]
+    legend = tr("pdf.legend_weekly", folga=codes[FOLGA], ferias=codes[FERIAS]).replace("✗", ABSENT_MARK)
+    story = [t, Spacer(1, 6), _legend(legend)]
     _build(path, story, title, subtitle)
 
 
@@ -310,9 +342,10 @@ def render_final(report: FinalReport, path: Path) -> None:
 def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct: str) -> Table:
     regular, bold = _register_fonts()
     staff_w = 100 if with_summary else 112
-    summary_w = 54 if with_summary else 0
+    summary_w = 50 if with_summary else 0
     n_summary = 5 if with_summary else 0
-    col_w = (CONTENT_W - staff_w - n_summary * summary_w) / max(1, 2 * len(weeks))
+    notes_w = 104 if with_summary else 0  # Notes go on the page with the totals
+    col_w = (CONTENT_W - staff_w - n_summary * summary_w - notes_w) / max(1, 2 * len(weeks))
     col_w = min(col_w, 70)
 
     head0: list = [tr("staff")]
@@ -323,8 +356,8 @@ def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct:
         head1 += [tr("cash"), tr("card")]
     if with_summary:
         head0 += [tr("pdf.cash_total"), tr("pdf.card_total"), tr("total"),
-                  tr("pdf.deduction_col", pct=pct), tr("receivable")]
-        head1 += [""] * 5
+                  tr("pdf.deduction_col", pct=pct), tr("receivable"), tr("pdf.notes")]
+        head1 += [""] * 6
 
     body = []
     for row in report.rows:
@@ -337,7 +370,7 @@ def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct:
                 line += [NO_DATA_MARK, NO_DATA_MARK]
         if with_summary:
             line += [format_euro(row.total_cash), format_euro(row.total_card), format_euro(row.total),
-                     format_euro(row.deduction), format_euro(row.receivable)]
+                     format_euro(row.deduction), format_euro(row.receivable), ""]
         body.append(line)
 
     totals = [tr("pdf.totals")]
@@ -349,7 +382,7 @@ def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct:
             totals += [NO_DATA_MARK, NO_DATA_MARK]
     if with_summary:
         totals += [format_euro(report.total_cash), format_euro(report.total_card), format_euro(report.total),
-                   format_euro(report.deduction), format_euro(report.receivable)]
+                   format_euro(report.deduction), format_euro(report.receivable), ""]
 
     # Body rows and the (larger) totals row are sized separately, so one big
     # grand total doesn't shrink the whole table.
@@ -367,11 +400,13 @@ def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct:
     total_size = min(size, fit([totals], bold))
     hs = _header_style(bold, min(size, 7.5))
     head0 = [head0[0]] + [Paragraph(h.replace("\n", "<br/>"), hs) if h else "" for h in head0[1:]]
-    for line in body:
+    for line, row in zip(body, report.rows):
         line[0] = _truncate(line[0], regular, size + 0.5, staff_w)
+        if with_summary:
+            line[-1] = _notes_cell(row.notes, max(5.5, size - 0.5))
 
     data = [head0, head1] + body + [totals]
-    widths = [staff_w] + [col_w] * (2 * len(weeks)) + [summary_w] * n_summary
+    widths = [staff_w] + [col_w] * (2 * len(weeks)) + [summary_w] * n_summary + ([notes_w] if with_summary else [])
     t = Table(data, colWidths=widths, repeatRows=2, hAlign="LEFT")
     style = _base_style(2, len(data), size)
     style += [
@@ -392,11 +427,14 @@ def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct:
             ]
     if with_summary:
         first = 1 + 2 * len(weeks)
-        total_col, recv_col = first + 2, first + 4
-        for c in range(first, first + 5):
+        total_col, recv_col, notes_col = first + 2, first + 4, first + 5
+        for c in range(first, first + 6):
             style.append(("SPAN", (c, 0), (c, 1)))
         style += [
-            ("BACKGROUND", (first, 0), (first + 4, 1), HEADER_BG),
+            ("BACKGROUND", (first, 0), (first + 5, 1), HEADER_BG),
+            ("ALIGN", (notes_col, 2), (notes_col, -1), "LEFT"),
+            ("VALIGN", (notes_col, 2), (notes_col, -1), "TOP"),
+            ("LINEBEFORE", (notes_col, 0), (notes_col, -1), 0.9, HEADER_BG),
             ("LINEBEFORE", (total_col, 0), (total_col, -1), 0.9, HEADER_BG),
             ("FONT", (total_col, 2), (total_col, -2), bold, size),
             ("FONT", (recv_col, 2), (recv_col, -2), bold, size),

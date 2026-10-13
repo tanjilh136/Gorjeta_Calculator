@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.request import pathname2url
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SECTIONS = ("sala", "cozinha", "copa", "other")
 
@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS attendance (
     date      TEXT    NOT NULL REFERENCES days(date) ON DELETE CASCADE,
     staff_id  INTEGER NOT NULL REFERENCES staff(id),
     present   INTEGER NOT NULL DEFAULT 0,
+    note      TEXT    NOT NULL DEFAULT '',
     PRIMARY KEY (date, staff_id)
 );
 
@@ -42,6 +43,24 @@ CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT
 );
+
+-- Weekly days off (folgas): 0 = Monday ... 6 = Sunday.
+CREATE TABLE IF NOT EXISTS folgas (
+    staff_id  INTEGER NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+    weekday   INTEGER NOT NULL CHECK (weekday BETWEEN 0 AND 6),
+    PRIMARY KEY (staff_id, weekday)
+);
+
+-- Scheduled holidays (ferias), both dates inclusive.
+CREATE TABLE IF NOT EXISTS ferias (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    staff_id    INTEGER NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+    start_date  TEXT    NOT NULL,
+    end_date    TEXT    NOT NULL,
+    CHECK (end_date >= start_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ferias_dates ON ferias(start_date, end_date);
 """
 
 REQUIRED_TABLES = {"staff", "days", "attendance", "settings"}
@@ -69,10 +88,25 @@ class Day:
     card_total_cents: int
     updated_at: str
     attendance: dict[int, bool]  # staff_id -> present
+    notes: dict[int, str] = field(default_factory=dict)  # staff_id -> note (non-empty only)
 
     @property
     def present_ids(self) -> set[int]:
         return {sid for sid, p in self.attendance.items() if p}
+
+
+@dataclass
+class Ferias:
+    id: int
+    staff_id: int
+    start: date
+    end: date
+
+    def covers(self, d: date) -> bool:
+        return self.start <= d <= self.end
+
+    def overlaps(self, start: date, end: date) -> bool:
+        return self.start <= end and start <= self.end
 
 
 def iso(d: date) -> str:
@@ -117,11 +151,18 @@ class Database:
     def _init_schema(self) -> None:
         with self.conn:
             self.conn.executescript(SCHEMA)
+            self._migrate()
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             for key, value in DEFAULT_SETTINGS.items():
                 self.conn.execute(
                     "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (key, value)
                 )
+
+    def _migrate(self) -> None:
+        """Bring databases (and restored backups) from older versions up to date."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(attendance)")}
+        if "note" not in cols:  # version 1 -> 2: notes per person per day
+            self.conn.execute("ALTER TABLE attendance ADD COLUMN note TEXT NOT NULL DEFAULT ''")
 
     def close(self) -> None:
         self.conn.close()
@@ -217,18 +258,21 @@ class Database:
         row = self.conn.execute("SELECT * FROM days WHERE date = ?", (iso(d),)).fetchone()
         if row is None:
             return None
-        att = {
-            r["staff_id"]: bool(r["present"])
-            for r in self.conn.execute(
-                "SELECT staff_id, present FROM attendance WHERE date = ?", (iso(d),)
-            )
-        }
+        att: dict[int, bool] = {}
+        notes: dict[int, str] = {}
+        for r in self.conn.execute(
+            "SELECT staff_id, present, note FROM attendance WHERE date = ?", (iso(d),)
+        ):
+            att[r["staff_id"]] = bool(r["present"])
+            if r["note"]:
+                notes[r["staff_id"]] = r["note"]
         return Day(
             date=d,
             cash_total_cents=row["cash_total_cents"],
             card_total_cents=row["card_total_cents"],
             updated_at=row["updated_at"],
             attendance=att,
+            notes=notes,
         )
 
     def get_days(self, start: date, end: date) -> dict[date, Day]:
@@ -241,16 +285,26 @@ class Database:
             d = date.fromisoformat(row["date"])
             days[d] = Day(d, row["cash_total_cents"], row["card_total_cents"], row["updated_at"], {})
         for row in self.conn.execute(
-            "SELECT date, staff_id, present FROM attendance WHERE date BETWEEN ? AND ?",
+            "SELECT date, staff_id, present, note FROM attendance WHERE date BETWEEN ? AND ?",
             (iso(start), iso(end)),
         ):
             d = date.fromisoformat(row["date"])
             if d in days:
                 days[d].attendance[row["staff_id"]] = bool(row["present"])
+                if row["note"]:
+                    days[d].notes[row["staff_id"]] = row["note"]
         return days
 
-    def save_day(self, d: date, cash_cents: int, card_cents: int, attendance: dict[int, bool]) -> None:
-        """Create or overwrite a day with its attendance, atomically."""
+    def save_day(
+        self,
+        d: date,
+        cash_cents: int,
+        card_cents: int,
+        attendance: dict[int, bool],
+        notes: dict[int, str] | None = None,
+    ) -> None:
+        """Create or overwrite a day with its attendance and notes, atomically."""
+        notes = notes or {}
         if cash_cents < 0 or card_cents < 0:
             raise ValueError("negative amount")
         if (cash_cents > 0 or card_cents > 0) and not any(attendance.values()):
@@ -266,8 +320,11 @@ class Database:
             )
             self.conn.execute("DELETE FROM attendance WHERE date = ?", (iso(d),))
             self.conn.executemany(
-                "INSERT INTO attendance(date, staff_id, present) VALUES (?, ?, ?)",
-                [(iso(d), sid, 1 if p else 0) for sid, p in attendance.items()],
+                "INSERT INTO attendance(date, staff_id, present, note) VALUES (?, ?, ?, ?)",
+                [
+                    (iso(d), sid, 1 if p else 0, (notes.get(sid) or "").strip())
+                    for sid, p in attendance.items()
+                ],
             )
 
     def day_summaries(self, year: int | None = None) -> list[sqlite3.Row]:
@@ -308,8 +365,9 @@ class Database:
             return cur.rowcount
 
     def purge_older_than(self, cutoff: date) -> int:
-        """Delete day records strictly before cutoff."""
+        """Delete day records (and holidays that ended) strictly before cutoff."""
         with self.conn:
+            self.conn.execute("DELETE FROM ferias WHERE end_date < ?", (iso(cutoff),))
             self.conn.execute("DELETE FROM attendance WHERE date < ?", (iso(cutoff),))
             cur = self.conn.execute("DELETE FROM days WHERE date < ?", (iso(cutoff),))
             return cur.rowcount
@@ -320,6 +378,75 @@ class Database:
             (iso(start), iso(end)),
         )
         return {r["staff_id"] for r in rows}
+
+    # ----------------------------------------------------- folgas (days off)
+    def get_folgas(self) -> dict[int, set[int]]:
+        """staff_id -> weekdays off (0 = Monday ... 6 = Sunday)."""
+        result: dict[int, set[int]] = {}
+        for r in self.conn.execute("SELECT staff_id, weekday FROM folgas"):
+            result.setdefault(r["staff_id"], set()).add(r["weekday"])
+        return result
+
+    def set_folga(self, staff_id: int, weekday: int, off: bool) -> None:
+        with self.conn:
+            if off:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO folgas(staff_id, weekday) VALUES (?, ?)", (staff_id, weekday)
+                )
+            else:
+                self.conn.execute(
+                    "DELETE FROM folgas WHERE staff_id = ? AND weekday = ?", (staff_id, weekday)
+                )
+
+    # ---------------------------------------------------- ferias (holidays)
+    @staticmethod
+    def _ferias(row: sqlite3.Row) -> Ferias:
+        return Ferias(
+            row["id"], row["staff_id"],
+            date.fromisoformat(row["start_date"]), date.fromisoformat(row["end_date"]),
+        )
+
+    def list_ferias(self) -> list[Ferias]:
+        rows = self.conn.execute("SELECT * FROM ferias ORDER BY start_date DESC, id DESC")
+        return [self._ferias(r) for r in rows]
+
+    def ferias_between(self, start: date, end: date) -> list[Ferias]:
+        """Holidays that overlap [start, end], oldest first."""
+        rows = self.conn.execute(
+            "SELECT * FROM ferias WHERE start_date <= ? AND end_date >= ? ORDER BY start_date, id",
+            (iso(end), iso(start)),
+        )
+        return [self._ferias(r) for r in rows]
+
+    def ferias_conflict(self, staff_id: int, start: date, end: date, exclude_id: int | None = None) -> Ferias | None:
+        """Another holiday of the same person overlapping [start, end], if any."""
+        for f in self.ferias_between(start, end):
+            if f.staff_id == staff_id and f.id != exclude_id:
+                return f
+        return None
+
+    def add_ferias(self, staff_id: int, start: date, end: date) -> int:
+        if end < start:
+            raise ValueError("end before start")
+        with self.conn:
+            cur = self.conn.execute(
+                "INSERT INTO ferias(staff_id, start_date, end_date) VALUES (?, ?, ?)",
+                (staff_id, iso(start), iso(end)),
+            )
+            return int(cur.lastrowid)
+
+    def update_ferias(self, ferias_id: int, staff_id: int, start: date, end: date) -> None:
+        if end < start:
+            raise ValueError("end before start")
+        with self.conn:
+            self.conn.execute(
+                "UPDATE ferias SET staff_id = ?, start_date = ?, end_date = ? WHERE id = ?",
+                (staff_id, iso(start), iso(end), ferias_id),
+            )
+
+    def delete_ferias(self, ferias_id: int) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM ferias WHERE id = ?", (ferias_id,))
 
 
 def retention_cutoff(today: date, years: int = 5) -> date:

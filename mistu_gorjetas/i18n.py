@@ -12,6 +12,7 @@ STRINGS: dict[str, dict[str, str]] = {
     # ---------------------------------------------------------- navigation
     "nav.daily": {"en": "Daily Sheet", "pt": "Folha Diária"},
     "nav.staff": {"en": "Staff", "pt": "Funcionários"},
+    "nav.leave": {"en": "Days Off & Holidays", "pt": "Folgas e Férias"},
     "nav.records": {"en": "Records & Export", "pt": "Registos e Exportação"},
     "nav.settings": {"en": "Settings", "pt": "Definições"},
     "nav.about": {"en": "About", "pt": "Sobre"},
@@ -94,6 +95,59 @@ STRINGS: dict[str, dict[str, str]] = {
     },
     "daily.deleted": {"en": "Day {date} deleted.", "pt": "Dia {date} eliminado."},
     "daily.archived_tag": {"en": "(archived)", "pt": "(arquivado)"},
+    "daily.notes": {"en": "Notes", "pt": "Notas"},
+    "daily.note_placeholder": {"en": "Type a note…", "pt": "Escreva uma nota…"},
+    "daily.note_tip": {"en": "Click to edit the note", "pt": "Clique para editar a nota"},
+    "tag.folga": {"en": "Day off", "pt": "Folga"},
+    "tag.ferias": {"en": "Holiday", "pt": "Férias"},
+    # -------------------------------------------------- folgas & ferias page
+    "leave.title": {"en": "Days Off & Holidays", "pt": "Folgas e Férias"},
+    "leave.folgas": {"en": "Weekly days off (folgas)", "pt": "Folgas (descanso semanal)"},
+    "leave.folgas_hint": {
+        "en": "Tick each person's weekly days off. On a new day in the Daily Sheet they start "
+              "unticked (you can still change it).",
+        "pt": "Marque os dias de folga semanais de cada pessoa. Num dia novo da Folha Diária "
+              "começam desmarcados (pode sempre alterar).",
+    },
+    "leave.ferias": {"en": "Holidays (férias)", "pt": "Férias"},
+    "leave.ferias_hint": {
+        "en": "On new days inside a holiday the person starts unticked, and the note shows "
+              "“Holiday” in red. Exports list the holiday dates in the Notes column.",
+        "pt": "Nos dias novos dentro das férias a pessoa começa desmarcada e a nota mostra "
+              "“Férias” a vermelho. As exportações mostram as datas das férias na coluna Notas.",
+    },
+    "leave.add": {"en": "Add holiday…", "pt": "Adicionar férias…"},
+    "leave.edit": {"en": "Edit…", "pt": "Editar…"},
+    "leave.delete": {"en": "Delete", "pt": "Eliminar"},
+    "leave.show_past": {"en": "Show finished holidays", "pt": "Mostrar férias terminadas"},
+    "leave.start": {"en": "Start", "pt": "Início"},
+    "leave.end": {"en": "End", "pt": "Fim"},
+    "leave.days": {"en": "Days", "pt": "Dias"},
+    "leave.one_day": {"en": "1 day", "pt": "1 dia"},
+    "leave.n_days": {"en": "{n} days", "pt": "{n} dias"},
+    "leave.state.planned": {"en": "Planned", "pt": "Agendadas"},
+    "leave.state.ongoing": {"en": "Ongoing", "pt": "A decorrer"},
+    "leave.state.finished": {"en": "Finished", "pt": "Terminadas"},
+    "leave.dialog.add": {"en": "Add holiday", "pt": "Adicionar férias"},
+    "leave.dialog.edit": {"en": "Edit holiday", "pt": "Editar férias"},
+    "leave.err.range": {
+        "en": "The end date must not be before the start date.",
+        "pt": "A data de fim não pode ser anterior à data de início.",
+    },
+    "leave.err.overlap": {
+        "en": "{name} already has holidays from {start} to {end} that overlap these dates.",
+        "pt": "{name} já tem férias de {start} a {end} que se sobrepõem a estas datas.",
+    },
+    "leave.err.no_staff": {
+        "en": "There are no active staff members yet.",
+        "pt": "Ainda não há funcionários ativos.",
+    },
+    "leave.confirm.delete": {
+        "en": "Delete the holiday of {name} from {start} to {end}?\n\n"
+              "Days already saved in the Daily Sheet are not changed.",
+        "pt": "Eliminar as férias de {name} de {start} a {end}?\n\n"
+              "Os dias já guardados na Folha Diária não são alterados.",
+    },
     # --------------------------------------------------------------- staff
     "staff.title": {"en": "Staff", "pt": "Funcionários"},
     "staff.hint": {
@@ -303,9 +357,13 @@ STRINGS: dict[str, dict[str, str]] = {
     "pdf.card_total": {"en": "Card Total", "pt": "Total Cartão"},
     "pdf.deduction_col": {"en": "Deduction on Card ({pct}%)", "pt": "Dedução s/ Cartão ({pct}%)"},
     "pdf.legend_weekly": {
-        "en": "✗ = absent that day   — = no data saved for that day",
-        "pt": "✗ = ausente nesse dia   — = sem dados guardados para esse dia",
+        "en": "✗ = absent that day  ·  {folga} = day off  ·  {ferias} = holiday  ·  — = no data saved for that day",
+        "pt": "✗ = ausente nesse dia  ·  {folga} = folga  ·  {ferias} = férias  ·  — = sem dados guardados para esse dia",
     },
+    "pdf.notes": {"en": "Notes", "pt": "Notas"},
+    "pdf.code.folga": {"en": "OFF", "pt": "FO"},
+    "pdf.code.ferias": {"en": "HOL", "pt": "FÉ"},
+    "pdf.note.ferias": {"en": "Holiday: {start} – {end}", "pt": "Férias: {start} – {end}"},
     "pdf.legend_final": {
         "en": "— = no data saved for that week",
         "pt": "— = sem dados guardados para essa semana",

@@ -8,9 +8,32 @@ from decimal import Decimal
 
 from .db import Database, Day, Staff, monday_of
 from .money import deduction_cents, split_equally
+from .schedule import FERIAS, Schedule
 
 # Cell states for the weekly table
 VALUE, ABSENT, NO_DATA = "value", "absent", "nodata"
+# Note kinds for the Notes column
+NOTE_FERIAS, NOTE_DAY = FERIAS, "day"
+
+
+@dataclass
+class Note:
+    """One entry of a person's Notes cell in an export."""
+
+    kind: str  # NOTE_FERIAS: holiday start..end overlapping the period; NOTE_DAY: typed note
+    start: date
+    end: date | None = None
+    text: str = ""
+
+
+def period_notes(sched: Schedule, saved: dict[date, Day], staff_id: int) -> list[Note]:
+    """Holidays overlapping the period first, then the notes typed on the Daily Sheet."""
+    notes = [Note(NOTE_FERIAS, f.start, f.end) for f in sched.ferias_of(staff_id)]
+    for d in sorted(saved):
+        text = saved[d].notes.get(staff_id)
+        if text:
+            notes.append(Note(NOTE_DAY, d, None, text))
+    return notes
 
 
 @dataclass
@@ -54,6 +77,7 @@ class WeeklyCell:
     state: str
     cash: int = 0
     card: int = 0
+    reason: str | None = None  # for ABSENT cells: FOLGA / FERIAS when planned
 
 
 @dataclass
@@ -62,6 +86,7 @@ class WeeklyRow:
     cells: list[WeeklyCell]
     total_cash: int
     total_card: int
+    notes: list[Note] = field(default_factory=list)
 
 
 @dataclass
@@ -84,6 +109,7 @@ def build_weekly(db: Database, any_day: date) -> WeeklyReport:
     days = [monday + timedelta(days=i) for i in range(7)]
     saved = db.get_days(days[0], days[-1])
     shares = [day_shares(saved.get(d)) for d in days]
+    sched = Schedule(db, days[0], days[-1])
 
     rows: list[WeeklyRow] = []
     day_totals = [[0, 0] for _ in days]
@@ -100,8 +126,8 @@ def build_weekly(db: Database, any_day: date) -> WeeklyReport:
                 day_totals[i][0] += sh.cash_share
                 day_totals[i][1] += sh.card_share
             else:
-                cells.append(WeeklyCell(ABSENT))
-        rows.append(WeeklyRow(s, cells, tc, tk))
+                cells.append(WeeklyCell(ABSENT, reason=sched.reason(s.id, days[i])))
+        rows.append(WeeklyRow(s, cells, tc, tk, period_notes(sched, saved, s.id)))
 
     return WeeklyReport(
         monday=monday,
@@ -124,6 +150,7 @@ class FinalRow:
     total: int
     deduction: int
     receivable: int
+    notes: list[Note] = field(default_factory=list)
 
 
 @dataclass
@@ -154,6 +181,7 @@ def build_final(db: Database, start: date, end: date, deduction_pct: Decimal) ->
 
     saved = db.get_days(start, end)
     shares = {d: day_shares(day) for d, day in saved.items()}
+    sched = Schedule(db, start, end)
     week_has_data = [
         any(ws <= d <= we for d in saved) for ws, we in weeks
     ]
@@ -174,7 +202,10 @@ def build_final(db: Database, start: date, end: date, deduction_pct: Decimal) ->
         # Tax deduction applies to card tips only; cash is paid out in full:
         # receivable = cash + (card - card x pct).
         ded = deduction_cents(total_card, deduction_pct)
-        rows.append(FinalRow(s, per_week, total_cash, total_card, total, ded, total - ded))
+        rows.append(FinalRow(
+            s, per_week, total_cash, total_card, total, ded, total - ded,
+            period_notes(sched, saved, s.id),
+        ))
 
     week_totals = [
         (sum(r.weeks[i][0] for r in rows), sum(r.weeks[i][1] for r in rows))

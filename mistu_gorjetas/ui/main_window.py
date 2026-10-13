@@ -22,14 +22,15 @@ from ..db import Database
 from ..i18n import tr
 from .about_page import AboutPage
 from .daily_sheet import DailySheetPage
+from .leave_page import LeavePage
 from .records_page import RecordsPage
 from .settings_page import SettingsPage
 from .staff_page import StaffPage
 
 log = logging.getLogger(__name__)
 
-NAV_KEYS = ["nav.daily", "nav.staff", "nav.records", "nav.settings", "nav.about"]
-DAILY, STAFF, RECORDS, SETTINGS, ABOUT = range(5)
+NAV_KEYS = ["nav.daily", "nav.staff", "nav.leave", "nav.records", "nav.settings", "nav.about"]
+DAILY, STAFF, LEAVE, RECORDS, SETTINGS, ABOUT = range(6)
 
 
 class MainWindow(QMainWindow):
@@ -67,12 +68,13 @@ class MainWindow(QMainWindow):
         # --- pages
         self.daily = DailySheetPage(db)
         self.staff = StaffPage(db)
+        self.leave = LeavePage(db)
         self.records = RecordsPage(db)
         self.settings = SettingsPage(db)
         self.about = AboutPage()
         self.stack = QStackedWidget()
         self.stack.setObjectName("content")
-        for page in (self.daily, self.staff, self.records, self.settings, self.about):
+        for page in (self.daily, self.staff, self.leave, self.records, self.settings, self.about):
             self.stack.addWidget(page)
 
         central = QWidget()
@@ -86,6 +88,7 @@ class MainWindow(QMainWindow):
         # --- wiring
         self.nav.currentRowChanged.connect(self._navigate)
         self.staff.changed.connect(self._staff_changed)
+        self.leave.changed.connect(self.daily.schedule_changed)
         self.daily.dayChanged.connect(lambda _d: self.records.reload())
         self.records.openDay.connect(self._open_day)
         self.settings.languageChanged.connect(self._language_changed)
@@ -110,10 +113,12 @@ class MainWindow(QMainWindow):
 
     def _staff_changed(self) -> None:
         self.daily.reload_staff()
+        self.leave.reload()
         self.records.reload()
 
     def _data_replaced(self) -> None:
         self.daily.reload()
+        self.leave.reload()
         self.staff.reload()
         self.records.reload()
         lang = self.db.get_setting("language", "pt")
@@ -127,7 +132,7 @@ class MainWindow(QMainWindow):
     def _language_changed(self, code: str) -> None:
         i18n.set_language(code)
         self._retranslate_nav()
-        for page in (self.daily, self.staff, self.records, self.settings, self.about):
+        for page in (self.daily, self.staff, self.leave, self.records, self.settings, self.about):
             page.retranslate()
 
     # ------------------------------------------------------------------
