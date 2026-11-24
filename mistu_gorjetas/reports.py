@@ -1,4 +1,7 @@
-"""Builds the data for the weekly and final exports (independent of the PDF layout)."""
+"""Builds the data for the weekly and final exports (independent of the PDF layout).
+
+All amounts calculated here are in mills (1/1000 euro); see money.py.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +10,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from .db import Database, Day, Staff, monday_of
-from .money import deduction_cents, split_equally
+from .money import percent_of, split_mills
 from .schedule import FERIAS, Schedule
 
 # Cell states for the weekly table
@@ -52,8 +55,8 @@ def day_shares(day: Day | None) -> DayShares:
     return DayShares(
         True,
         present,
-        split_equally(day.cash_total_cents, n),
-        split_equally(day.card_total_cents, n),
+        split_mills(day.cash_total_cents, n),
+        split_mills(day.card_total_cents, n),
     )
 
 
@@ -201,7 +204,7 @@ def build_final(db: Database, start: date, end: date, deduction_pct: Decimal) ->
         total = total_cash + total_card
         # Tax deduction applies to card tips only; cash is paid out in full:
         # receivable = cash + (card - card x pct).
-        ded = deduction_cents(total_card, deduction_pct)
+        ded = percent_of(total_card, deduction_pct)
         rows.append(FinalRow(
             s, per_week, total_cash, total_card, total, ded, total - ded,
             period_notes(sched, saved, s.id),

@@ -25,12 +25,13 @@ from mistu_gorjetas import backup, build_config, licensing  # noqa: E402
 from mistu_gorjetas.db import Database, retention_cutoff  # noqa: E402
 from mistu_gorjetas.money import (  # noqa: E402
     MoneyError,
-    deduction_cents,
+    format_euro3,
     format_euro,
     format_percent,
     parse_amount,
     parse_percent,
-    split_equally,
+    percent_of,
+    split_mills,
 )
 from mistu_gorjetas.reports import (  # noqa: E402
     ABSENT,
@@ -65,16 +66,29 @@ class MoneyTests(unittest.TestCase):
             with self.assertRaises(MoneyError, msg=bad):
                 parse_amount(bad)
 
-    def test_split_rounds_down(self):
-        self.assertEqual(split_equally(10000, 3), 3333)
-        self.assertEqual(split_equally(5, 3), 1)
-        self.assertEqual(split_equally(100, 0), 0)
+    def test_format_three_decimals(self):
+        self.assertEqual(format_euro3(1234567), "€1.234,567")
+        self.assertEqual(format_euro3(5), "€0,005")
+        self.assertEqual(format_euro3(1000), "€1,000")
+        self.assertEqual(format_euro3(100000000), "€100.000,000")
+        self.assertEqual(format_euro3(-1500), "-€1,500")
 
-    def test_deduction_half_up(self):
-        self.assertEqual(deduction_cents(1000, Decimal("11.5")), 115)
-        self.assertEqual(deduction_cents(10, Decimal("15")), 2)  # 1.5 -> 2
-        self.assertEqual(deduction_cents(10, Decimal("25")), 3)  # 2.5 -> 3
-        self.assertEqual(deduction_cents(78049, Decimal("11.5")), 8976)  # 8975.635
+    def test_split_rounds_down_to_the_mill(self):
+        # typed totals are cents; shares are mills (0,001 €)
+        self.assertEqual(split_mills(10000, 3), 33333)  # 100,00 / 3 = 33,333
+        self.assertEqual(split_mills(5, 3), 16)  # 0,05 / 3 = 0,0166 -> 0,016
+        self.assertEqual(split_mills(100, 0), 0)
+        for cents in (1, 7, 101, 99999, 123456):
+            for n in (1, 2, 3, 7, 24):
+                share = split_mills(cents, n)
+                self.assertLess(cents * 10 - share * n, n)  # lost: under one mill per person
+                self.assertGreaterEqual(cents * 10 - share * n, 0)
+
+    def test_percent_half_up(self):
+        self.assertEqual(percent_of(1000, Decimal("11.5")), 115)
+        self.assertEqual(percent_of(10, Decimal("15")), 2)  # 1.5 -> 2
+        self.assertEqual(percent_of(10, Decimal("25")), 3)  # 2.5 -> 3
+        self.assertEqual(percent_of(78049, Decimal("11.5")), 8976)  # 8975.635
         self.assertEqual(format_percent(parse_percent("11.50")), "11,5")
         self.assertEqual(format_percent(parse_percent("12")), "12")
 
@@ -136,12 +150,20 @@ class ReportTests(DbTestCase):
         names = [row.staff.name for row in r.rows]
         self.assertEqual(names, ["Ana", "Bruno", "Carla"])  # archived Carla has records
         ana, _, carla = r.rows
-        self.assertEqual((ana.cells[0].state, ana.cells[0].cash, ana.cells[0].card), (VALUE, 500, 50))
+        # all amounts below are in mills: 1000,00 / 2 = 500,000 and 1,01 / 2 = 0,505
+        self.assertEqual((ana.cells[0].state, ana.cells[0].cash, ana.cells[0].card), (VALUE, 5000, 505))
         self.assertEqual(carla.cells[0].state, ABSENT)
-        self.assertEqual(carla.cells[1].cash, 333)
+        self.assertEqual(carla.cells[1].cash, 3330)  # 9,99 / 3 = 3,330
         self.assertEqual(ana.cells[2].state, NO_DATA)
-        self.assertEqual((ana.total_cash, ana.total_card), (833, 50))
-        self.assertEqual(r.day_totals[0], (1000, 100))  # 1 cent of card lost to rounding
+        self.assertEqual((ana.total_cash, ana.total_card), (8330, 505))
+        self.assertEqual(r.day_totals[0], (10000, 1010))  # nothing lost: divides exactly
+
+    def test_weekly_keeps_sub_cent_amounts(self):
+        # 10,00 split between 3 people = 3,333 each: 0,001 is left over, not 0,01
+        self.db.save_day(MON, 1000, 0, {self.a: True, self.b: True, self.c: True})
+        r = build_weekly(self.db, MON)
+        self.assertEqual([row.total_cash for row in r.rows], [3333, 3333, 3333])
+        self.assertEqual(r.total_cash, 9999)
 
     def test_archived_without_records_hidden(self):
         self.db.save_day(MON, 1000, 0, {self.a: True, self.b: True})
@@ -155,22 +177,31 @@ class ReportTests(DbTestCase):
         r = build_final(self.db, MON, MON + timedelta(days=13), Decimal("11.5"))
         self.assertEqual(len(r.weeks), 2)
         ana = r.rows[0]
-        self.assertEqual(ana.weeks, [(500, 500), (300, 0)])
-        self.assertEqual((ana.total_cash, ana.total_card), (800, 500))
-        self.assertEqual(ana.total, 1300)
-        # Deduction on card only: 500 x 11.5% = 57.5 -> 58; cash 800 untouched.
-        self.assertEqual(ana.deduction, 58)
-        self.assertEqual(ana.receivable, 1242)
+        # amounts in mills: 10,00 / 2 = 5,000 each
+        self.assertEqual(ana.weeks, [(5000, 5000), (3000, 0)])
+        self.assertEqual((ana.total_cash, ana.total_card), (8000, 5000))
+        self.assertEqual(ana.total, 13000)
+        # Deduction on card only: 5,000 x 11.5% = 0,575; cash 8,000 untouched.
+        self.assertEqual(ana.deduction, 575)
+        self.assertEqual(ana.receivable, 12425)
         self.assertEqual(ana.receivable, ana.total_cash + (ana.total_card - ana.deduction))
-        bruno = r.rows[1]  # cash 500 + card 500 -> deduction 57.5 -> 58
-        self.assertEqual((bruno.total, bruno.deduction, bruno.receivable), (1000, 58, 942))
-        self.assertEqual(r.deduction, 116)
+        bruno = r.rows[1]
+        self.assertEqual((bruno.total, bruno.deduction, bruno.receivable), (10000, 575, 9425))
+        self.assertEqual(r.deduction, 1150)
         self.assertEqual(r.receivable, r.total - r.deduction)
-        self.assertEqual(r.total, 2300)
-        self.assertEqual((r.total_cash, r.total_card), (1300, 1000))
+        self.assertEqual(r.total, 23000)
+        self.assertEqual((r.total_cash, r.total_card), (13000, 10000))
         self.assertEqual(r.total_cash + r.total_card, r.total)
         with self.assertRaises(ValueError):
             build_final(self.db, MON + timedelta(days=1), MON + timedelta(days=13), Decimal(0))
+
+    def test_final_rounds_deduction_to_the_mill(self):
+        # card 10,01 / 3 people = 3,336 each (0,001 left over); 10% of it = 0,3336 -> 0,334
+        self.db.save_day(MON, 0, 1001, {self.a: True, self.b: True, self.c: True})
+        r = build_final(self.db, MON, MON + timedelta(days=6), Decimal("10"))
+        for row in r.rows:
+            self.assertEqual((row.total_card, row.deduction, row.receivable), (3336, 334, 3002))
+        self.assertEqual((r.total_card, r.deduction, r.receivable), (10008, 1002, 9006))
 
 
 class LeaveTests(DbTestCase):

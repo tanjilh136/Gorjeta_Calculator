@@ -1,4 +1,10 @@
-"""Money helpers. All amounts are integer cents; no floating point anywhere."""
+"""Money helpers. No floating point anywhere.
+
+Two integer units are used:
+  * cents  - what the manager types in (cash / card totals of a day): 1/100 euro.
+  * mills  - everything calculated from them (shares, sums, deduction, receivable):
+             1/1000 euro, so the shown results keep three decimals.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +12,7 @@ import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 MAX_CENTS = 99_999_999_99  # €99.999.999,99 - far above any realistic day
+MILLS_PER_CENT = 10
 
 
 class MoneyError(ValueError):
@@ -33,6 +40,20 @@ def format_euro(cents: int) -> str:
     if cents < 0:
         return "-€" + format_amount(-cents)
     return "€" + format_amount(cents)
+
+
+def format_amount3(mills: int) -> str:
+    """12345678 -> '12.345,678' (no currency symbol, three decimals)."""
+    sign = "-" if mills < 0 else ""
+    mills = abs(int(mills))
+    return f"{sign}{_group_thousands(str(mills // 1000))},{mills % 1000:03d}"
+
+
+def format_euro3(mills: int) -> str:
+    """12345678 -> '€12.345,678'; calculated results use three decimals."""
+    if mills < 0:
+        return "-€" + format_amount3(-mills)
+    return "€" + format_amount3(mills)
 
 
 _ALLOWED = re.compile(r"^[0-9.,]+$")
@@ -93,11 +114,12 @@ def parse_amount(text: str) -> int:
     return cents
 
 
-def split_equally(total_cents: int, present_count: int) -> int:
-    """Per-person share, always rounded DOWN to the cent. No redistribution."""
+def split_mills(total_cents: int, present_count: int) -> int:
+    """Per-person share of a typed total, in mills, always rounded DOWN to the mill
+    (0,001 €). No redistribution of what is left over."""
     if present_count <= 0:
         return 0
-    return total_cents // present_count
+    return total_cents * MILLS_PER_CENT // present_count
 
 
 def parse_percent(value: str | Decimal | int) -> Decimal:
@@ -110,9 +132,9 @@ def parse_percent(value: str | Decimal | int) -> Decimal:
     return pct
 
 
-def deduction_cents(total_cents: int, pct: Decimal) -> int:
-    """Total x pct%, to the cent, rounding half up."""
-    exact = Decimal(int(total_cents)) * pct / Decimal(100)
+def percent_of(amount: int, pct: Decimal) -> int:
+    """amount x pct%, in the same integer unit as `amount`, rounding half up."""
+    exact = Decimal(int(amount)) * pct / Decimal(100)
     return int(exact.quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 

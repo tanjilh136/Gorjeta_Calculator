@@ -17,12 +17,13 @@ from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, 
 
 from . import APP_NAME, CREDIT, paths
 from .i18n import fmt_date, fmt_datetime, fmt_day_month, tr, weekday_short
-from .money import format_euro, format_percent
+from .money import format_euro3, format_percent
 from .reports import ABSENT, NO_DATA, NOTE_FERIAS, FinalReport, Note, WeeklyReport
 from .schedule import FERIAS, FOLGA
 
 PAGE = landscape(A4)
-MARGIN_X = 28
+MARGIN_X = 20
+CELL_PAD = 2  # left/right padding inside table cells
 MARGIN_TOP = 64
 MARGIN_BOTTOM = 40
 FRAME_PADDING = 6  # ReportLab's default frame padding on each side
@@ -40,7 +41,7 @@ MUTED = colors.HexColor("#8A9599")
 TEXT = colors.HexColor("#1B1F21")
 
 MAX_WEEKS_PER_PAGE = 5
-NOTES_W = 118  # Notes column width (both exports)
+NOTES_W = 90  # Notes column width (weekly export)
 
 _fonts: tuple[str, str] | None = None
 ABSENT_MARK = "✗"
@@ -62,11 +63,11 @@ def _register_fonts() -> tuple[str, str]:
     return _fonts
 
 
-def _fit_font(texts: list[str], font: str, width: float, base: float, minimum: float = 5.0) -> float:
+def _fit_font(texts: list[str], font: str, width: float, base: float, minimum: float = 4.6) -> float:
     widest = max((pdfmetrics.stringWidth(t, font, 1.0) for t in texts), default=0)
     if widest <= 0:
         return base
-    return max(minimum, min(base, (width - 6) / widest))
+    return max(minimum, min(base, (width - 2 * CELL_PAD - 0.8) / widest))
 
 
 def _truncate(text: str, font: str, size: float, width: float) -> str:
@@ -193,8 +194,8 @@ def _base_style(n_header_rows: int, n_rows: int, font_size: float) -> list:
         ("GRID", (0, 0), (-1, -1), 0.25, GRID),
         ("TOPPADDING", (0, 0), (-1, -1), 2.2),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2.2),
-        ("LEFTPADDING", (0, 0), (-1, -1), 3),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), CELL_PAD),
+        ("RIGHTPADDING", (0, 0), (-1, -1), CELL_PAD),
         ("FONT", (0, last), (-1, last), bold, font_size),
         ("BACKGROUND", (0, last), (-1, last), TOTAL_BG),
         ("LINEABOVE", (0, last), (-1, last), 1, HEADER_BG),
@@ -239,19 +240,19 @@ def render_weekly(report: WeeklyReport, path: Path) -> None:
                 line += [mark, mark]
                 marks.append((1 + 2 * i, r, cell.reason or ABSENT))
             else:
-                line += [format_euro(cell.cash), format_euro(cell.card)]
-        line += [format_euro(row.total_cash), format_euro(row.total_card), ""]
+                line += [format_euro3(cell.cash), format_euro3(cell.card)]
+        line += [format_euro3(row.total_cash), format_euro3(row.total_card), ""]
         body.append(line)
 
     totals = [tr("pdf.totals")]
     for i, (c, k) in enumerate(report.day_totals):
         if report.has_data[i]:
-            totals += [format_euro(c), format_euro(k)]
+            totals += [format_euro3(c), format_euro3(k)]
         else:
             totals += [NO_DATA_MARK, NO_DATA_MARK]
-    totals += [format_euro(report.total_cash), format_euro(report.total_card), ""]
+    totals += [format_euro3(report.total_cash), format_euro3(report.total_card), ""]
 
-    staff_w = 100
+    staff_w = 92
     col_w = (CONTENT_W - staff_w - NOTES_W) / 16
     # Body and the (larger) totals row are sized separately.
     size = _fit_font([v for line in body for v in line[1:17]] + head1[1:17], bold, col_w, 7.5)
@@ -341,10 +342,10 @@ def render_final(report: FinalReport, path: Path) -> None:
 
 def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct: str) -> Table:
     regular, bold = _register_fonts()
-    staff_w = 100 if with_summary else 112
-    summary_w = 50 if with_summary else 0
+    staff_w = 92 if with_summary else 112
+    summary_w = 47 if with_summary else 0
     n_summary = 5 if with_summary else 0
-    notes_w = 104 if with_summary else 0  # Notes go on the page with the totals
+    notes_w = 92 if with_summary else 0  # Notes go on the page with the totals
     col_w = (CONTENT_W - staff_w - n_summary * summary_w - notes_w) / max(1, 2 * len(weeks))
     col_w = min(col_w, 70)
 
@@ -365,24 +366,24 @@ def _final_table(report: FinalReport, weeks: list[int], with_summary: bool, pct:
         for wi in weeks:
             if report.week_has_data[wi]:
                 c, k = row.weeks[wi]
-                line += [format_euro(c), format_euro(k)]
+                line += [format_euro3(c), format_euro3(k)]
             else:
                 line += [NO_DATA_MARK, NO_DATA_MARK]
         if with_summary:
-            line += [format_euro(row.total_cash), format_euro(row.total_card), format_euro(row.total),
-                     format_euro(row.deduction), format_euro(row.receivable), ""]
+            line += [format_euro3(row.total_cash), format_euro3(row.total_card), format_euro3(row.total),
+                     format_euro3(row.deduction), format_euro3(row.receivable), ""]
         body.append(line)
 
     totals = [tr("pdf.totals")]
     for wi in weeks:
         if report.week_has_data[wi]:
             c, k = report.week_totals[wi]
-            totals += [format_euro(c), format_euro(k)]
+            totals += [format_euro3(c), format_euro3(k)]
         else:
             totals += [NO_DATA_MARK, NO_DATA_MARK]
     if with_summary:
-        totals += [format_euro(report.total_cash), format_euro(report.total_card), format_euro(report.total),
-                   format_euro(report.deduction), format_euro(report.receivable), ""]
+        totals += [format_euro3(report.total_cash), format_euro3(report.total_card), format_euro3(report.total),
+                   format_euro3(report.deduction), format_euro3(report.receivable), ""]
 
     # Body rows and the (larger) totals row are sized separately, so one big
     # grand total doesn't shrink the whole table.

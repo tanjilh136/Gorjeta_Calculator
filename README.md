@@ -83,15 +83,18 @@
 
 ## How tips are split
 
-- All money is stored as **integer cents**. No floating point is used.
+- No floating point is used. The totals you type are stored as **integer cents**; everything
+  calculated from them is kept in **mills (thousandths of a euro)** and shown with **three
+  decimals** (e.g. `€1.234,567`).
 - Cash and card are split separately, **equally among the staff present** that day:
-  `share = floor(total_cents / present_count)`.
-- Shares are always rounded **down** to the cent. The sum of the shares can be 1–2 cents below
-  the entered total, which is intended.
+  `share = floor(total_cents × 10 / present_count)` mills.
+- Shares are always rounded **down** to the mill (0,001 €). Per day, at most one mill per person
+  is left over, so the exports add up to within a few cents of what was typed in over a month.
 - Final export: the tax deduction applies to **card tips only**. Cash is paid out in full.
   - `Total = Cash Total + Card Total` (no deduction)
-  - `Deduction = Card Total × deduction %`, rounded half-up to the cent
+  - `Deduction = Card Total × deduction %`, rounded half-up to the mill
   - `Account Receivable = Cash Total + (Card Total − Deduction)`
+- The amounts you type, and the saved-days list in *Records & Export*, stay at two decimals.
 
 ## Getting started (development)
 
@@ -209,7 +212,7 @@ docs/screenshots/         Images for this README
 tools/make_icon.py        Generates assets/app.ico and assets/logo.png
 tests/                    Unit tests
 mistu_gorjetas/
-  money.py                Cent parsing/formatting, split, deduction
+  money.py                Cent/mill parsing and formatting, split, deduction
   schedule.py             Folgas / férias: who is planned absent on a date
   db.py                   SQLite schema and queries
   reports.py              Weekly / final export data

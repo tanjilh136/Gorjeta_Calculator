@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from ..db import Database, Day, Staff, retention_cutoff
 from ..i18n import fmt_date, fmt_datetime, section_name, tr, weekday_long
-from ..money import MoneyError, format_euro, split_equally
+from ..money import MoneyError, format_euro3, split_mills
 from ..schedule import FERIAS, FOLGA, reasons_for_day
 from .widgets import (
     MoneyEdit,
@@ -491,8 +491,8 @@ class DailySheetPage(QWidget):
         present = self._present_ids()
         n = len(present)
         cash, card = self._amounts()
-        cash_share = split_equally(cash, n) if cash is not None else None
-        card_share = split_equally(card, n) if card is not None else None
+        cash_share = split_mills(cash, n) if cash is not None else None
+        card_share = split_mills(card, n) if card is not None else None
 
         for r in range(self.table.rowCount()):
             item = self.table.item(r, COL_NAME)
@@ -500,8 +500,8 @@ class DailySheetPage(QWidget):
             brush = NORMAL if is_present else GREY
             values = ("–", "–", "–")
             if is_present and cash_share is not None and card_share is not None:
-                values = (format_euro(cash_share), format_euro(card_share),
-                          format_euro(cash_share + card_share))
+                values = (format_euro3(cash_share), format_euro3(card_share),
+                          format_euro3(cash_share + card_share))
             for c, v in zip((COL_CASH, COL_CARD, COL_TOTAL), values):
                 self.table.item(r, c).setText(v)
             for c in range(COL_NOTES):
@@ -510,8 +510,8 @@ class DailySheetPage(QWidget):
         self.count_label.setText(tr("daily.present_count", n=n, total=len(self._roster)))
         if n and cash_share is not None and card_share is not None:
             self.share_label.setText(tr(
-                "daily.per_person", cash=format_euro(cash_share), card=format_euro(card_share),
-                total=format_euro(cash_share + card_share),
+                "daily.per_person", cash=format_euro3(cash_share), card=format_euro3(card_share),
+                total=format_euro3(cash_share + card_share),
             ))
         else:
             self.share_label.setText("")
